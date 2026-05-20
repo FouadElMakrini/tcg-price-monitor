@@ -88,7 +88,7 @@ export async function GET() {
       numberValue(cpcSupplier2000),
       own?.latestStockStatus ?? "",
       own?.lastSeenAt ? own.lastSeenAt.toISOString() : "",
-      product.mapping?.matchScore ?? "",
+      product.mapping?.matchScore == null ? "" : String(product.mapping.matchScore),
       numberValue(diff),
       numberValue(diff2000),
       coeff === null ? "" : coeff.toFixed(2).replace(".", ","),
