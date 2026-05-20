@@ -1,0 +1,36 @@
+{
+  "name": "tcg-price-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "prisma generate && next build",
+    "start": "next start",
+    "db:push": "prisma db push",
+    "db:studio": "prisma studio",
+    "login:tcg": "tsx scripts/login-tcg.ts",
+    "scrape:once": "tsx scripts/scrape-tcg-once.ts",
+    "scrape:own": "tsx scripts/scrape-own-site-once.ts",
+    "postinstall": "prisma generate",
+    "debug:tcg": "tsx scripts/debug-tcg-page.ts",
+    "debug:tcg-category": "tsx scripts/debug-tcg-category.ts",
+    "use:postgres": "node scripts/use-postgres-schema.mjs"
+  },
+  "dependencies": {
+    "@prisma/client": "6",
+    "next": "15",
+    "playwright": "latest",
+    "react": "19",
+    "react-dom": "19",
+    "dotenv": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "prisma": "6",
+    "tsx": "latest",
+    "typescript": "latest"
+  }
+}

@@ -1,0 +1,138 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model SupplierWatchUrl {
+  id        String   @id @default(cuid())
+  supplier  String   @default("tcgdistribution")
+  url       String   @unique
+  type      String   @default("product") // product | listing
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model SupplierProduct {
+  id                String          @id @default(cuid())
+  supplier          String          @default("tcgdistribution")
+  url               String          @unique
+  name              String?
+  sku               String?
+  category          String?
+  imageUrl          String?
+  active            Boolean         @default(true)
+  isFavorite        Boolean         @default(false)
+  packagingMode     String          @default("unknown") // unknown | shrink | no_shrink
+  latestPrice       Decimal?
+  latestPriceText   String?
+  previousPrice     Decimal?
+  latestStockStatus String?
+  latestStockText   String?
+  firstSeenAt       DateTime        @default(now())
+  lastSeenAt        DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  snapshots         PriceSnapshot[]
+  mapping           ProductMapping?
+
+  @@index([supplier, active])
+  @@index([sku])
+}
+
+model OwnProduct {
+  id                String             @id @default(cuid())
+  supplier          String             @default("cartespokemon")
+  url               String             @unique
+  name              String?
+  sku               String?
+  imageUrl          String?
+  active            Boolean            @default(true)
+  latestPrice       Decimal?
+  latestPriceText   String?
+  previousPrice     Decimal?
+  latestStockStatus String?
+  latestStockText   String?
+  firstSeenAt       DateTime           @default(now())
+  lastSeenAt        DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  snapshots         OwnPriceSnapshot[]
+  mappings          ProductMapping[]
+
+  @@index([supplier, active])
+  @@index([sku])
+}
+
+model ProductMapping {
+  id                String          @id @default(cuid())
+  supplierProductId String          @unique
+  ownProductId      String
+  note              String?
+  autoMatched       Boolean         @default(false)
+  matchScore        Int?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  supplierProduct   SupplierProduct @relation(fields: [supplierProductId], references: [id], onDelete: Cascade)
+  ownProduct        OwnProduct      @relation(fields: [ownProductId], references: [id], onDelete: Cascade)
+
+  @@index([ownProductId])
+}
+
+model PriceSnapshot {
+  id          String           @id @default(cuid())
+  productId   String
+  runId       String?
+  name        String?
+  price       Decimal?
+  priceText   String?
+  imageUrl    String?
+  stockStatus String?
+  stockText   String?
+  httpStatus  Int?
+  error       String?
+  scrapedAt   DateTime         @default(now())
+  product     SupplierProduct  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  run         ScrapeRun?       @relation(fields: [runId], references: [id])
+
+  @@index([productId, scrapedAt])
+  @@index([runId])
+}
+
+model OwnPriceSnapshot {
+  id          String      @id @default(cuid())
+  productId   String
+  runId       String?
+  name        String?
+  price       Decimal?
+  priceText   String?
+  imageUrl    String?
+  stockStatus String?
+  stockText   String?
+  error       String?
+  scrapedAt   DateTime    @default(now())
+  product     OwnProduct  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  run         ScrapeRun?  @relation(fields: [runId], references: [id])
+
+  @@index([productId, scrapedAt])
+  @@index([runId])
+}
+
+model ScrapeRun {
+  id               String             @id @default(cuid())
+  supplier         String             @default("tcgdistribution")
+  status           String             @default("running") // running | success | failed | partial
+  startedAt        DateTime           @default(now())
+  finishedAt       DateTime?
+  total            Int                @default(0)
+  success          Int                @default(0)
+  failed           Int                @default(0)
+  discovered       Int                @default(0)
+  message          String?
+  snapshots        PriceSnapshot[]
+  ownSnapshots     OwnPriceSnapshot[]
+}
