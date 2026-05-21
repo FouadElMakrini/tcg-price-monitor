@@ -4,14 +4,19 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import {
+  addExternalSiteToTcgProduct,
   autoMatchProducts,
   cleanupUnsafeAutoMatches,
   importTcgPage,
   importCpcPage,
   linkCpcUrlToTcgProduct,
+  probeFavoriteTcgStocks,
+  probeTcgStockMax,
   refreshAllCpc,
   refreshAllTcg,
+  refreshExternalSite,
   refreshOneTcgProduct,
+  removeExternalSite,
   removeLink,
   setTcgFavorite,
   setTcgPackaging
@@ -25,9 +30,9 @@ function revalidateAll() {
   revalidatePath(`${ROOT}/comparatif`);
 }
 
-function numberFromForm(value: FormDataEntryValue | null, fallback: number) {
+function numberFromForm(value: FormDataEntryValue | null, fallback: number, max = 2000) {
   const number = Number(value ?? fallback);
-  return Number.isFinite(number) && number > 0 ? Math.min(number, 2000) : fallback;
+  return Number.isFinite(number) && number > 0 ? Math.min(number, max) : fallback;
 }
 
 export async function importTcgAction(formData: FormData) {
@@ -63,13 +68,13 @@ export async function refreshCpcAction() {
 export async function autoMatchAction(formData?: FormData) {
   const threshold = Number(formData?.get("threshold") ?? process.env.AUTO_MATCH_THRESHOLD ?? 82);
   const overwrite = String(formData?.get("overwrite") ?? "") === "yes";
-  await autoMatchProducts({ threshold: Number.isFinite(threshold) ? threshold : 78, overwrite });
+  await autoMatchProducts({ threshold: Number.isFinite(threshold) ? threshold : 82, overwrite });
   revalidateAll();
 }
 
 export async function cleanupAutoMatchesAction(formData?: FormData) {
   const threshold = Number(formData?.get("threshold") ?? process.env.AUTO_MATCH_THRESHOLD ?? 82);
-  await cleanupUnsafeAutoMatches({ threshold: Number.isFinite(threshold) ? threshold : 78 });
+  await cleanupUnsafeAutoMatches({ threshold: Number.isFinite(threshold) ? threshold : 82 });
   revalidateAll();
 }
 
@@ -108,6 +113,42 @@ export async function setPackagingAction(formData: FormData) {
   const packagingMode = String(formData.get("packagingMode") ?? "unknown");
   if (!id) return;
   await setTcgPackaging(id, packagingMode);
+  revalidateAll();
+}
+
+export async function probeOneStockAction(formData: FormData) {
+  const id = String(formData.get("id") ?? "");
+  const max = numberFromForm(formData.get("max"), Number(process.env.STOCK_PROBE_MAX ?? 1000), 5000);
+  if (!id) return;
+  await probeTcgStockMax(id, max);
+  revalidateAll();
+}
+
+export async function probeFavoriteStocksAction(formData: FormData) {
+  const max = numberFromForm(formData.get("max"), Number(process.env.STOCK_PROBE_MAX ?? 1000), 5000);
+  await probeFavoriteTcgStocks(max, Number(process.env.STOCK_PROBE_FAVORITES_LIMIT ?? 40));
+  revalidateAll();
+}
+
+export async function addExternalSiteAction(formData: FormData) {
+  const tcgProductId = String(formData.get("tcgProductId") ?? "");
+  const url = String(formData.get("externalUrl") ?? "").trim();
+  if (!tcgProductId || !url) return;
+  await addExternalSiteToTcgProduct(tcgProductId, url);
+  revalidateAll();
+}
+
+export async function refreshExternalSiteAction(formData: FormData) {
+  const id = String(formData.get("externalId") ?? "");
+  if (!id) return;
+  await refreshExternalSite(id);
+  revalidateAll();
+}
+
+export async function removeExternalSiteAction(formData: FormData) {
+  const id = String(formData.get("externalId") ?? "");
+  if (!id) return;
+  await removeExternalSite(id);
   revalidateAll();
 }
 

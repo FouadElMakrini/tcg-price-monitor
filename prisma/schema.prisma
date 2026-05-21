@@ -33,12 +33,16 @@ model SupplierProduct {
   previousPrice     Decimal?
   latestStockStatus String?
   latestStockText   String?
+  stockProbeMax     Int?
+  stockProbeCheckedAt DateTime?
+  stockProbeNote    String?
   firstSeenAt       DateTime        @default(now())
   lastSeenAt        DateTime?
   createdAt         DateTime        @default(now())
   updatedAt         DateTime        @updatedAt
   snapshots         PriceSnapshot[]
   mapping           ProductMapping?
+  externalProducts  ExternalProduct[]
 
   @@index([supplier, active])
   @@index([sku])
@@ -81,6 +85,47 @@ model ProductMapping {
   ownProduct        OwnProduct      @relation(fields: [ownProductId], references: [id], onDelete: Cascade)
 
   @@index([ownProductId])
+}
+
+
+model ExternalProduct {
+  id                String                  @id @default(cuid())
+  supplierProductId String
+  siteName          String
+  url               String
+  name              String?
+  sku               String?
+  imageUrl          String?
+  latestPrice       Decimal?
+  latestPriceText   String?
+  previousPrice     Decimal?
+  latestStockStatus String?
+  latestStockText   String?
+  lastSeenAt        DateTime?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  supplierProduct   SupplierProduct         @relation(fields: [supplierProductId], references: [id], onDelete: Cascade)
+  snapshots         ExternalPriceSnapshot[]
+
+  @@unique([supplierProductId, url])
+  @@index([siteName])
+  @@index([supplierProductId])
+}
+
+model ExternalPriceSnapshot {
+  id          String          @id @default(cuid())
+  externalId  String
+  name        String?
+  price       Decimal?
+  priceText   String?
+  imageUrl    String?
+  stockStatus String?
+  stockText   String?
+  error       String?
+  scrapedAt   DateTime        @default(now())
+  external    ExternalProduct @relation(fields: [externalId], references: [id], onDelete: Cascade)
+
+  @@index([externalId, scrapedAt])
 }
 
 model PriceSnapshot {

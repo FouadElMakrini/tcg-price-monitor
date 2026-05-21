@@ -24,7 +24,8 @@ export async function GET() {
     where: { active: true },
     include: {
       mapping: { include: { ownProduct: true } },
-      snapshots: { orderBy: { scrapedAt: "desc" }, take: 6 }
+      snapshots: { orderBy: { scrapedAt: "desc" }, take: 6 },
+      extraSites: { orderBy: { updatedAt: "desc" } }
     },
     orderBy: [{ isFavorite: "desc" }, { updatedAt: "desc" }]
   });
@@ -55,7 +56,9 @@ export async function GET() {
     "Coefficient CPC x0,88 / TCGD",
     "Coefficient CPC x0,77 / TCGD",
     "Historique TCGD récent",
-    "Historique CPC récent"
+    "Historique CPC récent",
+    "Autres sites",
+    "Prix autres sites"
   ]];
 
   for (const product of products) {
@@ -94,7 +97,9 @@ export async function GET() {
       coeff === null ? "" : coeff.toFixed(2).replace(".", ","),
       coeff2000 === null ? "" : coeff2000.toFixed(2).replace(".", ","),
       product.snapshots.map((snapshot) => numberValue(snapshot.price)).filter(Boolean).join(" -> "),
-      own ? await prisma.ownPriceSnapshot.findMany({ where: { productId: own.id }, orderBy: { scrapedAt: "desc" }, take: 6 }).then((snaps) => snaps.map((snapshot) => numberValue(snapshot.price)).filter(Boolean).join(" -> ")) : ""
+      own ? await prisma.ownPriceSnapshot.findMany({ where: { productId: own.id }, orderBy: { scrapedAt: "desc" }, take: 6 }).then((snaps) => snaps.map((snapshot) => numberValue(snapshot.price)).filter(Boolean).join(" -> ")) : "",
+      product.extraSites.map((site) => `${site.siteName}: ${site.url}`).join(" | "),
+      product.extraSites.map((site) => `${site.siteName}: ${numberValue(site.latestPrice)}`).join(" | ")
     ]);
   }
 

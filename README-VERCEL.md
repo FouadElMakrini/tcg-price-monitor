@@ -1,46 +1,22 @@
-# Déploiement Vercel
+# Mise en ligne Vercel
 
-Cette app peut être déployée sur Vercel, mais il faut éviter SQLite et éviter un navigateur Playwright local persistant.
-
-## 1. Base de données
-
-Crée une base PostgreSQL externe : Neon, Supabase, Vercel Postgres ou Railway Postgres.
-
-Puis dans le projet :
-
-```bash
-npm run use:postgres
-```
-
-Dans Vercel, ajoute :
+## Variables nécessaires
 
 ```env
 DATABASE_URL="postgresql://..."
 CRON_SECRET="un_secret_long"
-SCRAPE_MAX_PRODUCTS="80"
-OWN_SCRAPE_MAX_PRODUCTS="120"
-TCG_DISCOVER_MAX_PAGES="12"
+CPC_SUPPLIER_FACTOR="0.88"
+CPC_SUPPLIER_BIG_FACTOR="0.77"
+AUTO_MATCH_THRESHOLD="82"
+SCRAPE_MAX_PRODUCTS="500"
+REFRESH_MAX_PRODUCTS="700"
+STOCK_PROBE_MAX="1000"
+STOCK_PROBE_HARD_MAX="5000"
+TCG_DISCOVER_MAX_PAGES="30"
+CPC_DISCOVER_MAX_PAGES="50"
 ```
 
-Puis localement ou depuis Vercel build :
-
-```bash
-npx prisma db push
-```
-
-## 2. Navigateur Playwright
-
-Pour Vercel, le plus fiable est un navigateur distant Browserless/Browserbase.
-
-Ajoute :
-
-```env
-BROWSERLESS_WS_ENDPOINT="wss://..."
-```
-
-Sinon, garde le scraping lourd en local/VPS/Coolify et laisse Vercel afficher le dashboard.
-
-## 3. Session TCG Distribution
+## Session TCGD
 
 En local :
 
@@ -48,18 +24,35 @@ En local :
 npm run login:tcg
 ```
 
-Puis copie le contenu de `storage/tcg-auth.json` dans une variable Vercel :
+Puis copie le contenu de `storage/tcg-auth.json` dans Vercel :
 
 ```env
-TCG_STORAGE_STATE_JSON='{...contenu du fichier...}'
+TCG_STORAGE_STATE_JSON='{...}'
 ```
 
-Ne commit jamais `storage/tcg-auth.json` dans GitHub.
+Ne commit jamais `storage/tcg-auth.json`.
 
-## 4. Cron
+## Stock panier sur Vercel
 
-Appelle :
+Le probe stock utilise Playwright quand il doit tester le panier. Sur Vercel, le plus fiable est un navigateur distant :
+
+```env
+BROWSERLESS_WS_ENDPOINT="wss://..."
+```
+
+Sans navigateur distant, l’import HTML et le comparatif fonctionnent, mais le stock exact par panier peut être limité.
+
+## Base PostgreSQL
+
+Avant de déployer, passe Prisma en PostgreSQL :
 
 ```bash
-curl -H "Authorization: Bearer $CRON_SECRET" https://ton-domaine.vercel.app/api/cron/scrape-tcg
+npm run use:postgres
+npx prisma migrate dev --name init
+```
+
+Commande de build conseillée dans Vercel :
+
+```bash
+npx prisma migrate deploy && npx prisma generate && next build
 ```

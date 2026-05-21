@@ -2,18 +2,23 @@ import { prisma } from "@/lib/db";
 import { formatDate, formatPrice } from "@/lib/format";
 import { CPC_SUPPLIER_FACTOR, CPC_SUPPLIER_FACTOR_2000, findOwnCandidates, marginValues } from "@/lib/compare";
 import {
+  addExternalSiteAction,
   archiveTcgAction,
   autoMatchAction,
   cleanupAutoMatchesAction,
   linkCpcUrlAction,
+  probeFavoriteStocksAction,
+  probeOneStockAction,
   refreshCpcAction,
+  refreshExternalSiteAction,
   refreshOneTcgAction,
   refreshTcgAction,
+  removeExternalSiteAction,
   removeLinkAction,
   setPackagingAction,
   toggleFavoriteAction
 } from "../actions";
-import { SmallSubmitButton, SubmitButton } from "../_components";
+import { SecretMorpion, SecretSnake, SmallSubmitButton, SubmitButton } from "../_components";
 
 export const dynamic = "force-dynamic";
 
@@ -55,10 +60,12 @@ export default async function ComparatifPage({ searchParams }: { searchParams: S
   const q = (params.q ?? "").trim();
   const only = params.only ?? "all";
   const view = params.view === "list" ? "list" : "grid";
+  const showSecret = q.toUpperCase() === "XOXO";
+  const showSnake = q.toLowerCase() === "snake";
 
   const where = {
     active: true,
-    ...(q ? {
+    ...(q && !showSecret && !showSnake ? {
       OR: [
         { name: { contains: q } },
         { sku: { contains: q } },
@@ -78,16 +85,13 @@ export default async function ComparatifPage({ searchParams }: { searchParams: S
             }
           }
         },
+        externalProducts: { include: { snapshots: { orderBy: { scrapedAt: "desc" }, take: 2 } }, orderBy: { updatedAt: "desc" } },
         snapshots: { orderBy: { scrapedAt: "desc" }, take: 3 }
       },
       orderBy: [{ isFavorite: "desc" }, { updatedAt: "desc" }],
       take: 1200
     }),
-    prisma.ownProduct.findMany({
-      where: { active: true },
-      orderBy: { updatedAt: "desc" },
-      take: 2000
-    })
+    prisma.ownProduct.findMany({ where: { active: true }, orderBy: { updatedAt: "desc" }, take: 2000 })
   ]);
 
   const filtered = products.filter((product) => {
@@ -97,6 +101,7 @@ export default async function ComparatifPage({ searchParams }: { searchParams: S
     if (only === "ready") return Boolean(product.mapping && product.latestPrice && product.mapping.ownProduct.latestPrice);
     if (only === "shrink") return product.packagingMode === "shrink";
     if (only === "no_shrink") return product.packagingMode === "no_shrink";
+    if (only === "stockProbe") return product.stockProbeMax !== null;
     return true;
   });
 
@@ -105,51 +110,45 @@ export default async function ComparatifPage({ searchParams }: { searchParams: S
 
   return (
     <div className="stack">
-      <section className="card panel">
-        <div className="section-head">
-          <div>
-            <h2>Comparatif direct</h2>
-            <p className="subtitle">
-              Matching plus prudent : l’app bloque maintenant les mélanges JP / FR / coréen / chinois quand l’info est visible. Les calculs affichent le prix CPC fournisseur en x{CPC_SUPPLIER_FACTOR.toFixed(2).replace(".", ",")} et aussi le seuil gros achat x{CPC_SUPPLIER_FACTOR_2000.toFixed(2).replace(".", ",")}.
-            </p>
-            <div className="small-metrics">
-              <span>{products.length} TCGD</span>
-              <span>{ownProducts.length} CPC importés</span>
-              <span>{mappedCount} liés CPC</span>
-              <span>{favoritesCount} favoris</span>
-            </div>
+      {showSecret ? <SecretMorpion /> : null}
+      {showSnake ? <SecretSnake /> : null}
+
+      <section className="toolbar-card card panel">
+        <div>
+          <h2>Comparatif</h2>
+          <div className="small-metrics">
+            <span>{products.length} TCGD</span>
+            <span>{ownProducts.length} CPC</span>
+            <span>{mappedCount} liés</span>
+            <span>{favoritesCount} favoris</span>
           </div>
-          <div className="row-actions">
-            <form action={refreshTcgAction}><SubmitButton pendingText="Refresh TCGD...">Refresh TCGD</SubmitButton></form>
-            <form action={refreshCpcAction}><SubmitButton pendingText="Refresh CPC...">Refresh CPC</SubmitButton></form>
-            <form action={autoMatchAction} className="auto-match-form">
-              <input name="threshold" type="hidden" value="82" />
-              <SubmitButton pendingText="Match auto...">Match auto prudent</SubmitButton>
-            </form>
-            <form action={cleanupAutoMatchesAction} className="auto-match-form">
-              <input name="threshold" type="hidden" value="82" />
-              <SubmitButton pendingText="Nettoyage...">Nettoyer mauvais matchs</SubmitButton>
-            </form>
-            <a className="button secondary" href="/api/tcg/export-csv">Exporter CSV</a>
-          </div>
+        </div>
+        <div className="row-actions toolbar-actions">
+          <form action={refreshTcgAction}><SubmitButton pendingText="TCGD...">Refresh TCGD</SubmitButton></form>
+          <form action={refreshCpcAction}><SubmitButton pendingText="CPC...">Refresh CPC</SubmitButton></form>
+          <form action={autoMatchAction}><input name="threshold" type="hidden" value="82" /><SubmitButton pendingText="Match...">Match auto</SubmitButton></form>
+          <form action={cleanupAutoMatchesAction}><input name="threshold" type="hidden" value="82" /><SubmitButton pendingText="Nettoyage...">Nettoyer matchs</SubmitButton></form>
+          <form action={probeFavoriteStocksAction} className="probe-favorites-form"><input name="max" type="hidden" value="1000" /><SubmitButton pendingText="Stock...">Stock favoris</SubmitButton></form>
+          <a className="button secondary" href="/api/tcg/export-csv">CSV</a>
         </div>
       </section>
 
-      <section className="card panel filters">
+      <section className="card panel filters compact-filter-card">
         <form className="filter-form wide-filter">
           <input name="q" placeholder="Rechercher : M4, OP-15, display..." defaultValue={q} />
           <select name="only" defaultValue={only}>
-            <option value="all">Tous les produits</option>
-            <option value="favorites">Favoris en haut uniquement</option>
+            <option value="all">Tous</option>
+            <option value="ready">Comparatifs prêts</option>
+            <option value="favorites">Favoris</option>
             <option value="missingCpc">Sans lien CPC</option>
             <option value="missingTcgPrice">Prix TCGD manquant</option>
-            <option value="ready">Comparatifs prêts</option>
+            <option value="stockProbe">Stock max connu</option>
             <option value="shrink">Shrink</option>
             <option value="no_shrink">No shrink</option>
           </select>
           <select name="view" defaultValue={view}>
-            <option value="grid">Vue grille</option>
-            <option value="list">Vue liste</option>
+            <option value="grid">Grille</option>
+            <option value="list">Liste</option>
           </select>
           <button className="button secondary" type="submit">Filtrer</button>
         </form>
@@ -164,109 +163,113 @@ export default async function ComparatifPage({ searchParams }: { searchParams: S
           const candidates = own ? [] : findOwnCandidates(product, ownProducts, 45, 8);
 
           return (
-            <article className={`card ${view === "grid" ? "compare-grid-card" : "compare-row"} ${product.isFavorite ? "favorite-row" : ""}`} key={product.id}>
-              <div className="product-side">
-                {product.imageUrl ? <img className="product-img" src={product.imageUrl} alt="" /> : <div className="product-img placeholder" />}
-                <div className="product-main">
-                  <div className="label-row">
-                    <span className="pill pill-tcg">TCGD</span>
-                    {product.isFavorite ? <span className="favorite-badge">★ Favori</span> : null}
-                    <span className="packaging-badge">{packagingLabel(product.packagingMode)}</span>
-                    {product.sku ? <span className="sku">{product.sku}</span> : null}
-                  </div>
-                  <h3>{product.name ?? product.url}</h3>
-                  <a href={product.url} target="_blank">ouvrir TCGD</a>
-                  <div className="price-line"><strong>{formatPrice(product.latestPrice)}</strong><span>{product.latestStockStatus ?? "stock ?"}</span><span>{formatDate(product.lastSeenAt)}</span></div>
-                  <div className="history-line">Évolution TCGD : {evolution(product.latestPrice, product.previousPrice)}</div>
-                  <div className="row-actions compact-actions">
-                    <form action={refreshOneTcgAction} className="inline-form">
+            <article className={`card compare-card ${view === "list" ? "compare-row" : ""} ${product.isFavorite ? "favorite-row" : ""}`} key={product.id}>
+              <div className="compare-main">
+                <div className="product-side">
+                  {product.imageUrl ? <img className="product-img" src={product.imageUrl} alt="" /> : <div className="product-img placeholder" />}
+                  <div className="product-main">
+                    <div className="label-row">
+                      <span className="pill pill-tcg">TCGD</span>
+                      {product.isFavorite ? <span className="favorite-badge">★</span> : null}
+                      <span className="packaging-badge">{packagingLabel(product.packagingMode)}</span>
+                      {product.sku ? <span className="sku">{product.sku}</span> : null}
+                    </div>
+                    <h3>{product.name ?? product.url}</h3>
+                    <a href={product.url} target="_blank">ouvrir TCGD</a>
+                    <div className="price-line"><strong>{formatPrice(product.latestPrice)}</strong><span>{product.latestStockStatus ?? "stock ?"}</span><span>{formatDate(product.lastSeenAt)}</span></div>
+                    <div className="stock-probe-line">
+                      <strong>Stock max :</strong> {product.stockProbeMax ?? "—"}
+                      {product.stockProbeCheckedAt ? <span> · {formatDate(product.stockProbeCheckedAt)}</span> : null}
+                    </div>
+                    {product.stockProbeNote ? <details className="mini-details"><summary>note stock</summary><p>{product.stockProbeNote}</p></details> : null}
+                    <div className="row-actions compact-actions">
+                      <form action={refreshOneTcgAction} className="inline-form"><input name="id" type="hidden" value={product.id} /><SmallSubmitButton pendingText="...">Refresh</SmallSubmitButton></form>
+                      <form action={probeOneStockAction} className="inline-form"><input name="id" type="hidden" value={product.id} /><input name="max" type="hidden" value="1000" /><SmallSubmitButton pendingText="...">Stock</SmallSubmitButton></form>
+                      <form action={toggleFavoriteAction} className="inline-form"><input name="id" type="hidden" value={product.id} /><input name="value" type="hidden" value={String(!product.isFavorite)} /><SmallSubmitButton pendingText="...">{product.isFavorite ? "★ off" : "★ favori"}</SmallSubmitButton></form>
+                    </div>
+                    <form action={setPackagingAction} className="packaging-form">
                       <input name="id" type="hidden" value={product.id} />
-                      <SmallSubmitButton pendingText="Refresh...">Refresh</SmallSubmitButton>
-                    </form>
-                    <form action={toggleFavoriteAction} className="inline-form">
-                      <input name="id" type="hidden" value={product.id} />
-                      <input name="value" type="hidden" value={String(!product.isFavorite)} />
-                      <SmallSubmitButton pendingText="...">{product.isFavorite ? "Retirer favori" : "Mettre favori"}</SmallSubmitButton>
+                      <select name="packagingMode" defaultValue={product.packagingMode ?? "unknown"}>
+                        <option value="unknown">Shrink : à définir</option>
+                        <option value="shrink">Shrink</option>
+                        <option value="no_shrink">No shrink</option>
+                      </select>
+                      <SmallSubmitButton pendingText="OK...">OK</SmallSubmitButton>
                     </form>
                   </div>
-                  <form action={setPackagingAction} className="packaging-form">
-                    <input name="id" type="hidden" value={product.id} />
-                    <select name="packagingMode" defaultValue={product.packagingMode ?? "unknown"}>
-                      <option value="unknown">Shrink / no shrink : à définir</option>
-                      <option value="shrink">Shrink</option>
-                      <option value="no_shrink">No shrink</option>
-                    </select>
-                    <SmallSubmitButton pendingText="OK...">OK</SmallSubmitButton>
-                  </form>
+                </div>
+
+                <div className="link-side">
+                  {own ? (
+                    <div className="linked-product">
+                      {own.imageUrl ? <img className="small-img" src={own.imageUrl} alt="" /> : <div className="small-img placeholder" />}
+                      <div>
+                        <div className="label-row"><span className="pill pill-cpc">CPC</span>{matchScore !== null ? <span className="match-score">{matchScore}%</span> : null}{own.sku ? <span className="sku">{own.sku}</span> : null}</div>
+                        <strong>{own.name ?? own.url}</strong>
+                        <a href={own.url} target="_blank">ouvrir CPC</a>
+                        <div className="price-two-lines compact-prices">
+                          <div><span>Site</span><strong>{formatPrice(own.latestPrice)}</strong></div>
+                          <div><span>x{CPC_SUPPLIER_FACTOR.toFixed(2)}</span><strong>{formatPrice(values.cpcPrice)}</strong></div>
+                          <div><span>x{CPC_SUPPLIER_FACTOR_2000.toFixed(2)}</span><strong>{formatPrice(values.cpcPrice2000)}</strong></div>
+                        </div>
+                        <form action={removeLinkAction} className="inline-form"><input name="tcgProductId" type="hidden" value={product.id} /><SmallSubmitButton pendingText="...">Retirer</SmallSubmitButton></form>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="map-block">
+                      <form action={linkCpcUrlAction} className="map-form">
+                        <input name="tcgProductId" type="hidden" value={product.id} />
+                        <input name="cpcUrl" placeholder="URL CPC à lier" required />
+                        <SmallSubmitButton pendingText="Lien...">Lier CPC</SmallSubmitButton>
+                      </form>
+                      {candidates.length > 0 ? (
+                        <details className="candidate-list" open={view === "list"}>
+                          <summary>Candidats CPC possibles</summary>
+                          {candidates.map((candidate) => (
+                            <form action={linkCpcUrlAction} className="candidate-item" key={candidate.product.id}>
+                              <input name="tcgProductId" type="hidden" value={product.id} />
+                              <input name="cpcUrl" type="hidden" value={candidate.product.url} />
+                              {candidate.product.imageUrl ? <img src={candidate.product.imageUrl} alt="" /> : <span className="mini-placeholder" />}
+                              <span>{candidate.score}% · {candidate.product.name ?? candidate.product.url}</span>
+                              <SmallSubmitButton pendingText="...">Lier</SmallSubmitButton>
+                            </form>
+                          ))}
+                        </details>
+                      ) : <p className="history-line">Aucun candidat fiable.</p>}
+                    </div>
+                  )}
                 </div>
               </div>
 
-              <div className="link-side">
-                {own ? (
-                  <div className="linked-product">
-                    {own.imageUrl ? <img className="small-img" src={own.imageUrl} alt="" /> : <div className="small-img placeholder" />}
-                    <div>
-                      <div className="label-row">
-                        <span className="pill pill-cpc">CPC</span>
-                        {matchScore !== null ? <span className="match-score">match {matchScore}%</span> : null}
-                        {own.sku ? <span className="sku">{own.sku}</span> : null}
+              <div className="result-side compact-result-side">
+                <div className="result-grid-mini">
+                  <div><span>CPC x0.88</span><strong>{formatPrice(values.cpcPrice)}</strong></div>
+                  <div><span>CPC x0.77</span><strong>{formatPrice(values.cpcPrice2000)}</strong></div>
+                  <div><span>Écart 0.88</span><strong>{formatPrice(values.diff)}</strong></div>
+                  <div><span>Marge 0.88</span><strong>{formatPercent(values.marginPercent)}</strong></div>
+                  <div><span>Coef 0.88</span><strong>{formatCoeff(values.coefficient)}</strong></div>
+                  <div><span>Écart 0.77</span><strong>{formatPrice(values.diff2000)}</strong></div>
+                </div>
+                <details className="mini-details"><summary>Historique prix</summary><p>TCGD : {product.snapshots.map((snap) => formatPrice(snap.price)).join(" → ") || "—"}</p>{own ? <p>CPC : {own.snapshots.map((snap) => formatPrice(snap.price)).join(" → ") || "—"}</p> : null}</details>
+                <details className="mini-details external-sites">
+                  <summary>Autres sites ({product.externalProducts.length})</summary>
+                  <form action={addExternalSiteAction} className="external-form">
+                    <input name="tcgProductId" type="hidden" value={product.id} />
+                    <input name="externalUrl" placeholder="URL Hikaru / autre site" />
+                    <SmallSubmitButton pendingText="...">Ajouter</SmallSubmitButton>
+                  </form>
+                  <div className="external-list">
+                    {product.externalProducts.map((external) => (
+                      <div className="external-item" key={external.id}>
+                        {external.imageUrl ? <img src={external.imageUrl} alt="" /> : null}
+                        <div><strong>{external.siteName}</strong><a href={external.url} target="_blank">{formatPrice(external.latestPrice)} · {external.latestStockStatus ?? "stock ?"}</a></div>
+                        <form action={refreshExternalSiteAction}><input name="externalId" type="hidden" value={external.id} /><SmallSubmitButton pendingText="...">↻</SmallSubmitButton></form>
+                        <form action={removeExternalSiteAction}><input name="externalId" type="hidden" value={external.id} /><SmallSubmitButton pendingText="...">×</SmallSubmitButton></form>
                       </div>
-                      <strong>{own.name ?? own.url}</strong>
-                      <a href={own.url} target="_blank">ouvrir CPC</a>
-                      <div className="price-two-lines">
-                        <div><span>Prix site</span><strong>{formatPrice(own.latestPrice)}</strong></div>
-                        <div><span>x{CPC_SUPPLIER_FACTOR.toFixed(2)}</span><strong>{formatPrice(values.cpcPrice)}</strong></div>
-                        <div><span>+2000€ x{CPC_SUPPLIER_FACTOR_2000.toFixed(2)}</span><strong>{formatPrice(values.cpcPrice2000)}</strong></div>
-                      </div>
-                      <div className="history-line">{own.latestStockStatus ?? "stock ?"} · {formatDate(own.lastSeenAt)}</div>
-                      <form action={removeLinkAction} className="inline-form">
-                        <input name="tcgProductId" type="hidden" value={product.id} />
-                        <SmallSubmitButton pendingText="Suppression...">Retirer le lien</SmallSubmitButton>
-                      </form>
-                    </div>
+                    ))}
                   </div>
-                ) : (
-                  <div className="map-block">
-                    <form action={linkCpcUrlAction} className="map-form">
-                      <input name="tcgProductId" type="hidden" value={product.id} />
-                      <label>
-                        Aucun match CPC. Coller l’URL CPC si besoin.
-                        <input name="cpcUrl" placeholder="https://cartespokemon.com/fr-be/products/..." required />
-                      </label>
-                      <SmallSubmitButton pendingText="Import + lien...">Importer et lier CPC</SmallSubmitButton>
-                    </form>
-                    {candidates.length > 0 ? (
-                      <div className="candidate-list">
-                        <strong>Candidats possibles</strong>
-                        {candidates.map((candidate) => (
-                          <form action={linkCpcUrlAction} className="candidate-item" key={candidate.product.id}>
-                            <input name="tcgProductId" type="hidden" value={product.id} />
-                            <input name="cpcUrl" type="hidden" value={candidate.product.url} />
-                            {candidate.product.imageUrl ? <img src={candidate.product.imageUrl} alt="" /> : <span className="mini-placeholder" />}
-                            <span>{candidate.score}% · {candidate.product.name ?? candidate.product.url}</span>
-                            <SmallSubmitButton pendingText="Lien...">Lier</SmallSubmitButton>
-                          </form>
-                        ))}
-                      </div>
-                    ) : <p className="history-line">Aucun candidat CPC fiable. Importe plus de pages CPC ou colle l’URL.</p>}
-                  </div>
-                )}
-              </div>
-
-              <div className="result-side">
-                <div className="result-kpi"><span>CPC fournisseur x{CPC_SUPPLIER_FACTOR.toFixed(2)}</span><strong>{formatPrice(values.cpcPrice)}</strong></div>
-                <div className="result-kpi"><span>CPC +2000€ x{CPC_SUPPLIER_FACTOR_2000.toFixed(2)}</span><strong>{formatPrice(values.cpcPrice2000)}</strong></div>
-                <div className="result-kpi"><span>Écart x{CPC_SUPPLIER_FACTOR.toFixed(2)}</span><strong>{formatPrice(values.diff)}</strong></div>
-                <div className="result-kpi"><span>Marge x{CPC_SUPPLIER_FACTOR.toFixed(2)}</span><strong>{formatPercent(values.marginPercent)}</strong></div>
-                <div className="result-kpi"><span>Coef x{CPC_SUPPLIER_FACTOR.toFixed(2)}</span><strong>{formatCoeff(values.coefficient)}</strong></div>
-                <div className="result-kpi soft"><span>Écart +2000€</span><strong>{formatPrice(values.diff2000)}</strong></div>
-                <div className="result-kpi soft"><span>Marge +2000€</span><strong>{formatPercent(values.marginPercent2000)}</strong></div>
-                <div className="history-line">TCGD hist. : {product.snapshots.map((snap) => formatPrice(snap.price)).join(" → ") || "—"}</div>
-                {own ? <div className="history-line">CPC hist. : {own.snapshots.map((snap) => formatPrice(snap.price)).join(" → ") || "—"}</div> : null}
-                <form action={archiveTcgAction} className="inline-form archive-form">
-                  <input name="id" type="hidden" value={product.id} />
-                  <SmallSubmitButton pendingText="Archive...">Archiver</SmallSubmitButton>
-                </form>
+                </details>
+                <form action={archiveTcgAction} className="inline-form archive-form"><input name="id" type="hidden" value={product.id} /><SmallSubmitButton pendingText="Archive...">Archiver</SmallSubmitButton></form>
               </div>
             </article>
           );

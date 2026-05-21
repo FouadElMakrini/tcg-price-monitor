@@ -743,3 +743,378 @@ export async function setTcgPackaging(productId: string, packagingMode: string) 
     data: { packagingMode: allowed.has(packagingMode) ? packagingMode : "unknown" }
   });
 }
+
+function siteNameFromUrl(rawUrl: string) {
+  try {
+    const host = new URL(rawUrl).hostname.replace(/^www\./, "");
+    if (host.includes("hikaru")) return "Hikaru";
+    if (host.includes("cardmarket")) return "Cardmarket";
+    if (host.includes("ultrajeux")) return "UltraJeux";
+    if (host.includes("parkage")) return "Parkage";
+    return host.split(".")[0]?.replace(/-/g, " ") || "Autre site";
+  } catch {
+    return "Autre site";
+  }
+}
+
+async function fetchAnyHtml(url: string) {
+  const response = await fetch(url, {
+    headers: {
+      "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+      "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "accept-language": "fr-FR,fr;q=0.9,en;q=0.8"
+    },
+    cache: "no-store",
+    redirect: "follow"
+  });
+  return { html: await response.text(), status: response.status, finalUrl: response.url };
+}
+
+async function scrapeGenericProduct(url: string): Promise<ProductData & { siteName: string }> {
+  const normalized = normalizeUrl(url);
+  const origin = new URL(normalized).origin;
+  const { html } = await fetchAnyHtml(normalized);
+  const name = extractName(html);
+  const imageUrl = extractImage(html, origin);
+  const price = parsePriceFromHtml(html);
+  const stock = extractStock(html);
+  return {
+    url: normalized,
+    siteName: siteNameFromUrl(normalized),
+    name,
+    sku: extractSku(name, normalized),
+    imageUrl,
+    price: price.price,
+    priceText: price.priceText,
+    stockStatus: stock.stockStatus,
+    stockText: stock.stockText
+  };
+}
+
+async function saveExternalProduct(supplierProductId: string, data: ProductData & { siteName: string }) {
+  const existing = await prisma.externalProduct.findFirst({ where: { supplierProductId, url: data.url } });
+  const changed = hasChanged(existing?.latestPrice, data.price);
+  const external = await prisma.externalProduct.upsert({
+    where: { supplierProductId_url: { supplierProductId, url: data.url } },
+    update: {
+      siteName: data.siteName,
+      name: data.name ?? existing?.name,
+      sku: data.sku ?? existing?.sku,
+      imageUrl: data.imageUrl ?? existing?.imageUrl,
+      previousPrice: changed ? existing?.latestPrice : existing?.previousPrice,
+      latestPrice: data.price ?? existing?.latestPrice,
+      latestPriceText: data.priceText ?? existing?.latestPriceText,
+      latestStockStatus: data.stockStatus ?? existing?.latestStockStatus,
+      latestStockText: data.stockText ?? existing?.latestStockText,
+      lastSeenAt: new Date()
+    },
+    create: {
+      supplierProductId,
+      siteName: data.siteName,
+      url: data.url,
+      name: data.name,
+      sku: data.sku,
+      imageUrl: data.imageUrl,
+      latestPrice: data.price,
+      latestPriceText: data.priceText,
+      latestStockStatus: data.stockStatus,
+      latestStockText: data.stockText,
+      lastSeenAt: new Date()
+    }
+  });
+
+  await prisma.externalPriceSnapshot.create({
+    data: {
+      externalId: external.id,
+      name: data.name,
+      price: data.price,
+      priceText: data.priceText,
+      imageUrl: data.imageUrl,
+      stockStatus: data.stockStatus,
+      stockText: data.stockText
+    }
+  });
+
+  return external;
+}
+
+export async function addExternalSiteToTcgProduct(tcgProductId: string, url: string) {
+  const product = await prisma.supplierProduct.findUnique({ where: { id: tcgProductId } });
+  if (!product) return null;
+  const data = await scrapeGenericProduct(url);
+  return saveExternalProduct(tcgProductId, data);
+}
+
+export async function refreshExternalSite(externalProductId: string) {
+  const external = await prisma.externalProduct.findUnique({ where: { id: externalProductId } });
+  if (!external) return null;
+  const data = await scrapeGenericProduct(external.url);
+  return saveExternalProduct(external.supplierProductId, data);
+}
+
+export async function removeExternalSite(externalProductId: string) {
+  await prisma.externalProduct.deleteMany({ where: { id: externalProductId } });
+}
+
+function parseStockNumberFromText(text: string) {
+  const cleaned = decodeHtml(text).toLowerCase();
+  const patterns = [
+    /(?:stock|stock disponible|disponible|reste|restant|availability|inventory)[^0-9]{0,60}(\d{1,5})/i,
+    /(\d{1,5})[^0-9]{0,35}(?:en stock|disponibles?|restants?|available)/i,
+    /"(?:stock|inventory_quantity|available_quantity|stock_quantity|qty_available)"\s*:\s*(\d{1,5})/i
+  ];
+  for (const pattern of patterns) {
+    const match = cleaned.match(pattern);
+    if (!match) continue;
+    const value = Number(match[1]);
+    if (Number.isInteger(value) && value >= 0 && value <= 5000) return value;
+  }
+  return null;
+}
+
+function meaningfulWords(input: string | null | undefined) {
+  return decodeHtml(input ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9àâäéèêëïîôöùûüç\s-]/gi, " ")
+    .split(/\s+/)
+    .map((word) => word.trim())
+    .filter((word) => word.length >= 4 && !["pokemon", "boite", "boosters", "booster", "display", "japonais", "francais", "anglais", "avec", "pour", "carte", "cartes"].includes(word))
+    .slice(0, 8);
+}
+
+function storageStateForPlaywright() {
+  if (process.env.TCG_STORAGE_STATE_JSON?.trim()) {
+    try {
+      return JSON.parse(process.env.TCG_STORAGE_STATE_JSON.trim());
+    } catch {
+      return undefined;
+    }
+  }
+  const statePath = path.resolve(process.cwd(), process.env.TCG_STORAGE_STATE_PATH ?? "storage/tcg-auth.json");
+  return fs.existsSync(statePath) ? statePath : undefined;
+}
+
+async function openProbeBrowser(chromium: any) {
+  const endpoint = process.env.BROWSERLESS_WS_ENDPOINT?.trim();
+  if (!endpoint) {
+    const browser = await chromium.launch({ headless: true });
+    return { browser, close: () => browser.close() };
+  }
+
+  try {
+    const browser = await chromium.connectOverCDP(endpoint);
+    return { browser, close: () => browser.close() };
+  } catch {
+    const browser = await chromium.connect(endpoint);
+    return { browser, close: () => browser.close() };
+  }
+}
+
+async function setQuantityOnPage(page: any, quantity: number) {
+  await page.evaluate((qty: number) => {
+    const selectors = [
+      'input[name="quantity"]',
+      'input[name="qty"]',
+      'input[name="qte"]',
+      'input[name*="quant" i]',
+      'input[id*="quant" i]',
+      'input[type="number"]'
+    ];
+    const inputs = Array.from(document.querySelectorAll<HTMLInputElement>(selectors.join(',')));
+    for (const input of inputs) {
+      input.removeAttribute('max');
+      input.setAttribute('value', String(qty));
+      input.value = String(qty);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }, quantity).catch(() => undefined);
+
+  for (const selector of ['input[name="quantity"]', 'input[name="qty"]', 'input[name="qte"]', 'input[name*="quant" i]', 'input[type="number"]']) {
+    const locator = page.locator(selector).first();
+    if (await locator.count().catch(() => 0)) {
+      await locator.fill(String(quantity)).catch(() => undefined);
+    }
+  }
+}
+
+async function clickAddToCart(page: any) {
+  const selectors = [
+    'button:has-text("Ajouter au panier")',
+    'button:has-text("Ajouter")',
+    'input[value*="Ajouter" i]',
+    'button:has-text("Panier")',
+    'button[type="submit"]',
+    'input[type="submit"]',
+    'a:has-text("Ajouter")'
+  ];
+
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    if (await locator.count().catch(() => 0)) {
+      await Promise.all([
+        page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => undefined),
+        locator.click({ timeout: 9000 }).catch(() => undefined)
+      ]);
+      return true;
+    }
+  }
+
+  const formSubmitted = await page.evaluate(() => {
+    const forms = Array.from(document.querySelectorAll<HTMLFormElement>('form'));
+    const form = forms.find((candidate) => /panier|cart|basket|add|ajout/i.test(candidate.innerText + ' ' + candidate.action));
+    if (!form) return false;
+    form.submit();
+    return true;
+  }).catch(() => false);
+
+  return Boolean(formSubmitted);
+}
+
+async function readCartQuantity(page: any, productName: string | null | undefined) {
+  await page.goto(`${TCG_BASE}/p/cart.html`, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => undefined);
+  await page.waitForTimeout(900);
+
+  const words = meaningfulWords(productName);
+  const result = await page.evaluate((matchWords: string[]) => {
+    const parseNum = (raw: string | null | undefined) => {
+      if (!raw) return null;
+      const normalized = String(raw).replace(/[^0-9]/g, '');
+      if (!normalized) return null;
+      const n = Number(normalized);
+      return Number.isFinite(n) && n >= 0 && n <= 5000 ? n : null;
+    };
+
+    const quantityFrom = (root: Element) => {
+      const values: number[] = [];
+      const inputSelectors = [
+        'input[name*="quant" i]', 'input[id*="quant" i]', 'input[name="quantity"]',
+        'input[name="qty"]', 'input[name="qte"]', 'input[type="number"]', 'select[name*="quant" i]'
+      ];
+      for (const input of Array.from(root.querySelectorAll<HTMLInputElement | HTMLSelectElement>(inputSelectors.join(',')))) {
+        const value = parseNum((input as HTMLInputElement).value || input.getAttribute('value') || input.textContent || '');
+        if (value !== null) values.push(value);
+      }
+      for (const node of Array.from(root.querySelectorAll('[data-quantity], [data-qty], [data-stock], [data-inventory]'))) {
+        for (const attr of ['data-quantity', 'data-qty', 'data-stock', 'data-inventory']) {
+          const value = parseNum(node.getAttribute(attr));
+          if (value !== null) values.push(value);
+        }
+      }
+      return values.length ? Math.max(...values) : null;
+    };
+
+    const allRows = Array.from(document.querySelectorAll('tr, li, article, .cart-line, .cart-item, .cart__item, .basket-item, [class*="cart" i], [id*="cart" i]'));
+    const scored = allRows
+      .map((row) => {
+        const text = (row.textContent || '').toLowerCase();
+        const score = matchWords.reduce((sum, word) => sum + (text.includes(word) ? 1 : 0), 0);
+        return { row, score, quantity: quantityFrom(row), text };
+      })
+      .filter((entry) => entry.quantity !== null);
+
+    const matched = scored.filter((entry) => entry.score >= Math.min(2, matchWords.length || 2));
+    if (matched.length) return { quantity: Math.max(...matched.map((entry) => entry.quantity as number)), source: 'cart-row' };
+
+    const globalQty = quantityFrom(document.body);
+    if (globalQty !== null) return { quantity: globalQty, source: 'cart-global-input' };
+
+    const bodyText = document.body.innerText || '';
+    const explicit = bodyText.match(/(?:stock|quantit[ée] maximum|maximum|disponible|reste)[^0-9]{0,80}(\d{1,5})/i)?.[1];
+    const explicitValue = parseNum(explicit);
+    if (explicitValue !== null) return { quantity: explicitValue, source: 'cart-message' };
+
+    return { quantity: null, source: 'not-found' };
+  }, words).catch(() => ({ quantity: null, source: 'read-error' }));
+
+  return result as { quantity: number | null; source: string };
+}
+
+async function tryCartProbeStock(url: string, productName: string | null | undefined, maxToTest: number) {
+  if (process.env.DISABLE_CART_STOCK_PROBE === "true") return { value: null as number | null, note: "Probe panier désactivé" };
+
+  const safeMax = Math.min(Math.max(Number(maxToTest) || 1000, 1), Number(process.env.STOCK_PROBE_HARD_MAX ?? 5000));
+
+  try {
+    const { chromium } = await import("playwright");
+    const opened = await openProbeBrowser(chromium);
+    const storageState = storageStateForPlaywright();
+    const context = await opened.browser.newContext(storageState ? { storageState } : undefined);
+    const page = await context.newPage();
+
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.waitForTimeout(900);
+    await setQuantityOnPage(page, safeMax);
+    await clickAddToCart(page);
+    await page.waitForTimeout(1600);
+
+    const cartQty = await readCartQuantity(page, productName);
+    const bodyText = await page.locator("body").innerText().catch(() => "");
+
+    await context.close().catch(() => undefined);
+    await opened.close().catch(() => undefined);
+
+    if (cartQty.quantity !== null) {
+      const capped = cartQty.quantity >= safeMax ? `Au moins ${safeMax}` : String(cartQty.quantity);
+      return { value: cartQty.quantity, note: `${capped} unités détectées via panier (${cartQty.source}).` };
+    }
+
+    if (/stock demandé|stock demande|quantit[ée] maximum|maximum a été ajoutée|maximum a ete ajoutee|nous n'avons pas le stock demandé/i.test(bodyText)) {
+      return { value: null, note: `Limite atteinte en testant ${safeMax}, mais TCGD n'a pas exposé la quantité exacte.` };
+    }
+    if (/panier|ajout[ée]|added|cart/i.test(bodyText)) {
+      return { value: safeMax, note: `Au moins ${safeMax} unités semblent ajoutables.` };
+    }
+    return { value: null, note: "Stock précis non détecté par le test panier" };
+  } catch (error) {
+    return { value: null, note: `Probe panier impossible: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+export async function probeTcgStockMax(productId: string, maxToTest = Number(process.env.STOCK_PROBE_MAX ?? 1000)) {
+  const product = await prisma.supplierProduct.findUnique({ where: { id: productId } });
+  if (!product) return null;
+
+  let note = "";
+  let stockMax: number | null = null;
+
+  try {
+    const { html } = await fetchHtml(product.url, "tcgdistribution");
+    stockMax = parseStockNumberFromText(html);
+    if (stockMax !== null) note = "Stock lu dans la fiche";
+  } catch (error) {
+    note = error instanceof Error ? error.message : String(error);
+  }
+
+  if (stockMax === null) {
+    const probed = await tryCartProbeStock(product.url, product.name, maxToTest);
+    stockMax = probed.value;
+    note = probed.note;
+  }
+
+  await prisma.supplierProduct.update({
+    where: { id: productId },
+    data: {
+      stockProbeMax: stockMax,
+      stockProbeCheckedAt: new Date(),
+      stockProbeNote: note
+    }
+  });
+
+  return { productId, stockMax, note };
+}
+
+export async function probeFavoriteTcgStocks(maxToTest = 300, limit = 40) {
+  const products = await prisma.supplierProduct.findMany({
+    where: { active: true, isFavorite: true },
+    orderBy: { updatedAt: "desc" },
+    take: limit
+  });
+  let checked = 0;
+  for (const product of products) {
+    await probeTcgStockMax(product.id, maxToTest);
+    checked++;
+    await sleep(Number(process.env.SCRAPE_DELAY_MS ?? 350));
+  }
+  return { checked };
+}
